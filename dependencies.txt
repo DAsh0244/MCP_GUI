@@ -1,0 +1,4 @@
+pyserial
+C:\Users\Danyal\Documents\Code\python\prologix_GPIB\dist\prologix_usb-0.0.1-py3-none-any.whl
+C:\Users\Danyal\Documents\SMU\tek_scope_control\dist\scope_control-0.0.1-py3-none-any.whl
+C:\Users\Danyal\Documents\SMU\psu_control\dist\psu_control-0.0.1-py3-none-any.whl
