@@ -38,6 +38,7 @@ class Ui_Dialog(object):
         self.scope_addr_box.setObjectName("scope_addr_box")
         self.formLayout.setWidget(2, QtWidgets.QFormLayout.FieldRole, self.scope_addr_box)
         self.prologix_port_box = QtWidgets.QComboBox(Dialog)
+        self.prologix_port_box.setEditable(True)
         self.prologix_port_box.setObjectName("prologix_port_box")
         self.prologix_port_box.addItem("")
         self.formLayout.setWidget(0, QtWidgets.QFormLayout.FieldRole, self.prologix_port_box)

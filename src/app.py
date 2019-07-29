@@ -2,9 +2,9 @@ import sys
 # import psu_control
 # import scope_control
 from psu_control import Keithley2220G1
-from scope_control import TekScope
+from scope_control import TekScope, TekChannel, TekMeasurement
 from PyQt5.QtCore import Qt,QTimer,QCoreApplication
-from PyQt5.QtWidgets import QDialog, QApplication, QMainWindow, QWidget
+from PyQt5.QtWidgets import QDialog, QApplication, QMainWindow, QWidget, QFileDialog
 from uic.MainWindow import Ui_MainWindow as MainWindow
 from uic.about_dialog import Ui_Dialog as AboutDialog
 from uic.set_devices_dialog import Ui_Dialog as SetDevicesDialog 
@@ -53,6 +53,7 @@ class MCP_GUI(QMainWindow, MainWindow):
         self.halt_operation = False
         self.op = [MCP_GUI_OP.NOP,0]  # stack of currently queued operations (sweep->Measure->Capture)
         self.mode = MCP_GUI_MODE.NORMAL
+        self.timer = QTimer()
         self.actionAbout.triggered.connect(self.open_about_dialog)
         self.actionSpecify_GPIB_Addresses.triggered.connect(lambda x :self.open_set_devies_dialog(self.config))
         self.actionExit.triggered.connect(self.close)
@@ -62,6 +63,7 @@ class MCP_GUI(QMainWindow, MainWindow):
         self.measure_button.clicked.connect(self.make_measurement)
         self.sweep_button.clicked.connect(self.sweep_rails)
         self.halt_button.clicked.connect(self.halt_sweep)
+        self.save_data_button.clicked.connect(self.save_data)
         self.show()
         self.open_set_devies_dialog()
         if not self.config:
@@ -70,10 +72,12 @@ class MCP_GUI(QMainWindow, MainWindow):
         # self.termination()
         else:
             print(self.config)
-        self.psu = Keithley2220G1(port=self.config['prologix_port'],addr=self.config['psu_addr'])
+        self.psu = Keithley2220G1(port=self.config['prologix_port'],addr=self.config['psu_addr'],enforce_addr=True)
         self.psu_reset_channel = 1
         self.psu_bias_channel = 2 
-        self.scope = TekScope(port=self.psu._ser,addr=self.config['scope_addr'])
+        self.scope = TekScope(port=self.psu._ser,addr=self.config['scope_addr'],enforce_addr=True)
+        self.scope.wait = lambda x: QtTest.QTest.qWait(int(x*1000))
+        self.psu.wait = lambda x: QtTest.QTest.qWait(int(x*1000))
         self.scope_input_channel = 1
 
 
@@ -105,9 +109,17 @@ class MCP_GUI(QMainWindow, MainWindow):
             self.live_capture = True
             self.measure_button.setEnabled(False)
             self.make_measurement()
+            self.timer.timeout.connect(self.repeated_fig_update)
+            self.timer.start(1000)
         else:
             self.live_capture = False
             self.measure_button.setEnabled(True)
+            self.timer.stop()
+
+    def repeated_fig_update(self):
+        if self.live_capture:
+            self.make_measurement()
+            self.timer.start(1000)
 
     def rail_checkbox_handler(self,state):      
         if state == Qt.Checked:
@@ -133,23 +145,40 @@ class MCP_GUI(QMainWindow, MainWindow):
             'i_bias': self.ibias_box.value(),
             'i_reset': self.ireset_box.value(),
         }
-        # self.psu.set_voltage(self.psu_bias_channel,self.mcp_params['v_bias'])
-        # self.psu.set_voltage(self.psu_reset_channel,self.mcp_params['v_reset'])
-        # self.psu.set_current(self.psu_bias_channel,self.mcp_params['i_bias'])
-        # self.psu.set_current(self.psu_bias_channel,self.mcp_params['i_reset'])
+        self.psu.set_voltage(self.psu_bias_channel,self.mcp_params['v_bias'])
+        self.psu.set_voltage(self.psu_reset_channel,-self.mcp_params['v_reset'])
+        self.psu.set_current(self.psu_bias_channel,0.001*self.mcp_params['i_bias'])
+        self.psu.set_current(self.psu_reset_channel,0.001*self.mcp_params['i_reset'])
 
-    def capture_waveform(self):
+    def capture_waveform(self, retries=10):
         print('capturing')
-        preamble,data = self.scope.capture_waveform()
-        times, voltages = self.scope.convert_raw_samples(data, preamble)
+        self.scope.start_acquisition(single=True)
+
+        self.scope.send_cmd('*OPC?')
+        tries = 0
+        while self.scope.read_response() != '1' and tries != retries:
+            self.scope.read_response()
+            tries += 1
+        if tries == retries:
+            self.op = [MCP_GUI_OP.CAPTURE,100]
+            self.op_complete()
+            return [],[]
+        self._preamble,self._data = self.scope.capture_waveform()
+        times, voltages = self.scope.convert_raw_samples(self._data, self._preamble)
         return times, voltages
 
     def make_measurement(self,save=False):
         times, voltages = self.capture_waveform()
-        self.MplWidget.update(times,voltages)
+        self.MplWidget.update_figure(times,voltages)
         print('measuring')
+        min_meas = self.scope.measure(TekChannel.CH1, TekMeasurement.MIN)
+        max_meas = self.scope.measure(TekChannel.CH1, TekMeasurement.MAX)
+        self.measured_min.setText('{:.2f}'.format(min_meas))
+        self.measured_max.setText('{:.2f}'.format(max_meas))
 
-
+    def save_data(self):
+        outfile,file_filter = QFileDialog.getSaveFileName(self, 'Save File')
+        self.scope.save_waveform_csv(outfile,self._preamble, self._data)
 
     def sweep_rails(self):
         self.sweep_params = {
@@ -160,6 +189,9 @@ class MCP_GUI(QMainWindow, MainWindow):
             'v_reset_max':self.sweep_reset_max.value(),
             'v_reset_step':self.sweep_reset_step.value(),
         }
+        self.live_capture = False
+        self.live_measure.setEnabled(False)
+        self.live_measure.setChecked(False)
         self.live_rails.setChecked(True)
         self.live_rails.setEnabled(False)
         self.vreset_box.setEnabled(False)
@@ -174,7 +206,6 @@ class MCP_GUI(QMainWindow, MainWindow):
         self.op = [MCP_GUI_OP.SWEEP,0]
         for reset_voltage in reset_range:
             for bias_voltage in bias_range:
-                print(reset_voltage, bias_voltage)
                 if self.halt_operation:
                     self.halt_operation = False
                     self.vreset_box.setValue(old_mcp_params['v_reset'])
@@ -188,14 +219,17 @@ class MCP_GUI(QMainWindow, MainWindow):
                     self.op_complete()
                     self.progressBar.setValue(0)
                     self.op = [MCP_GUI_OP.NOP,0]
+                    print('halted')
                     return   
-                # self.psu.set_voltage(self.psu_reset_channel, -reset_voltage)
-                # self.psu.set_voltage(self.psu_bias_channel, bias_voltage)
+                print(reset_voltage, bias_voltage)
+                self.psu.set_voltage(self.psu_reset_channel, -reset_voltage)
+                self.psu.set_voltage(self.psu_bias_channel, bias_voltage)
                 self.vbias_box.setValue(bias_voltage)
                 self.vreset_box.setValue(reset_voltage)
                 # wait for a voltages to stabilize
                 QtTest.QTest.qWait(STABILIZE_TIME)
                 self.make_measurement(save=True)
+                QtTest.QTest.qWait(STABILIZE_TIME)
                 iterations += 1
                 self.update_progress_bar(round(iterations/total_iterations*100))
         self.vreset_box.setValue(old_mcp_params['v_reset'])

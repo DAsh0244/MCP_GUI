@@ -35,6 +35,8 @@ class MplWidget(QWidget):
         self.canvas.axes.clear()
         self.canvas.axes.plot(x_val, y_val)
         self.canvas.axes.set_title('Captured MCP')
+        self.canvas.axes.set_ylabel('Volts')
+        self.canvas.axes.set_xlabel('Time (s)')
         self.canvas.draw()
 
 
